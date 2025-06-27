@@ -1,10 +1,12 @@
+import * as fs from "fs"
 import path from "path"
 import { getProjectInfo } from "@/src/utils/get-project-info"
 import { highlighter } from "@/src/utils/highlighter"
 import { resolveImport } from "@/src/utils/resolve-import"
 import { cosmiconfig } from "cosmiconfig"
 import fg from "fast-glob"
-import { loadConfig } from "tsconfig-paths"
+import { jsonc } from "jsonc"
+import { loadConfig, type ConfigLoaderSuccessResult } from "tsconfig-paths"
 import { z } from "zod"
 
 export const DEFAULT_STYLE = "default"
@@ -83,13 +85,61 @@ export async function getConfig(cwd: string) {
 export async function resolveConfigPaths(cwd: string, config: RawConfig) {
   // Read tsconfig.json.
   const tsConfig = await loadConfig(cwd)
+  let resolvedConfig: Pick<
+    ConfigLoaderSuccessResult,
+    "absoluteBaseUrl" | "paths"
+  >
 
   if (tsConfig.resultType === "failed") {
-    throw new Error(
-      `Failed to load ${config.tsx ? "tsconfig" : "jsconfig"}.json. ${
-        tsConfig.message ?? ""
-      }`.trim()
-    )
+    // Find deno.json(c) - if it doesn't exist, throw the error below
+    const denoJsonPath = path.join(cwd, "deno.json")
+    const denoJsoncPath = path.join(cwd, "deno.jsonc")
+
+    let denoConfigPath: string | null = null
+    if (fs.existsSync(denoJsonPath)) {
+      denoConfigPath = denoJsonPath
+    } else if (fs.existsSync(denoJsoncPath)) {
+      denoConfigPath = denoJsoncPath
+    }
+
+    if (!denoConfigPath) {
+      throw new Error(
+        `Failed to load ${config.tsx ? "tsconfig" : "jsconfig"}.json. ${
+          tsConfig.message ?? ""
+        }`.trim()
+      )
+    }
+
+    // if deno.json(c) exists, assign it's base path to `tsConfig.absoluteBaseUrl`
+    // and then read deno.json(c) and find all local import aliases (e.g. if it doesn't start with npm: or jsr:)
+    // and assign them to `tsConfig.paths` as `{ "imports key": ["imports value"] }`
+    // and if any of the paths in deno.json have a trailing slash, you need to append a * to both the key and value
+    const denoConfig = jsonc.parse(fs.readFileSync(denoConfigPath, "utf-8"))
+    const imports = denoConfig.imports || {}
+
+    const paths: Record<string, string[]> = {}
+
+    for (const [key, value] of Object.entries(imports)) {
+      if (
+        typeof value === "string" &&
+        !value.startsWith("npm:") &&
+        !value.startsWith("jsr:")
+      ) {
+        // Handle trailing slash case
+        if (key.endsWith("/") && value.endsWith("/")) {
+          paths[`${key}*`] = [`${value}*`]
+        } else {
+          paths[key] = [value]
+        }
+      }
+    }
+
+    resolvedConfig = {
+      absoluteBaseUrl: cwd,
+      paths,
+    }
+  } else {
+    resolvedConfig = tsConfig
   }
 
   return configSchema.parse({
@@ -100,27 +150,30 @@ export async function resolveConfigPaths(cwd: string, config: RawConfig) {
         ? path.resolve(cwd, config.tailwind.config)
         : "",
       tailwindCss: path.resolve(cwd, config.tailwind.css),
-      utils: await resolveImport(config.aliases["utils"], tsConfig),
-      components: await resolveImport(config.aliases["components"], tsConfig),
-      ui: config.aliases["ui"]
-        ? await resolveImport(config.aliases["ui"], tsConfig)
+      utils: await resolveImport(config.aliases.utils, resolvedConfig),
+      components: await resolveImport(
+        config.aliases.components,
+        resolvedConfig
+      ),
+      ui: config.aliases.ui
+        ? await resolveImport(config.aliases.ui, resolvedConfig)
         : path.resolve(
-            (await resolveImport(config.aliases["components"], tsConfig)) ??
+            (await resolveImport(config.aliases.components, resolvedConfig)) ??
               cwd,
             "ui"
           ),
       // TODO: Make this configurable.
       // For now, we assume the lib and hooks directories are one level up from the components directory.
-      lib: config.aliases["lib"]
-        ? await resolveImport(config.aliases["lib"], tsConfig)
+      lib: config.aliases.lib
+        ? await resolveImport(config.aliases.lib, resolvedConfig)
         : path.resolve(
-            (await resolveImport(config.aliases["utils"], tsConfig)) ?? cwd,
+            (await resolveImport(config.aliases.utils, resolvedConfig)) ?? cwd,
             ".."
           ),
-      hooks: config.aliases["hooks"]
-        ? await resolveImport(config.aliases["hooks"], tsConfig)
+      hooks: config.aliases.hooks
+        ? await resolveImport(config.aliases.hooks, resolvedConfig)
         : path.resolve(
-            (await resolveImport(config.aliases["components"], tsConfig)) ??
+            (await resolveImport(config.aliases.components, resolvedConfig)) ??
               cwd,
             "..",
             "hooks"
@@ -150,7 +203,7 @@ export async function getRawConfig(cwd: string): Promise<RawConfig | null> {
 // Since cwd is not necessarily the root of the project.
 // We'll instead check if ui aliases resolve to a different root.
 export async function getWorkspaceConfig(config: Config) {
-  let resolvedAliases: any = {}
+  const resolvedAliases: any = {}
 
   for (const key of Object.keys(config.aliases)) {
     if (!isAliasKey(key, config)) {

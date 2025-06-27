@@ -13,5 +13,6 @@
     "<node_internals>/**",
     "**/node_modules/**",
     "**/fixtures/**"
-  ]
+  ],
+  "editor.defaultFormatter": "esbenp.prettier-vscode"
 }

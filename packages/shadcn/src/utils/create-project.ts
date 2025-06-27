@@ -70,7 +70,7 @@ export async function createProject(
         name: "type",
         message: `The path ${highlighter.info(
           options.cwd
-        )} does not contain a package.json file.\n  Would you like to start a new project?`,
+        )} does not contain a package.json or deno.json file.\n  Would you like to start a new project?`,
         choices: [
           { title: "Next.js", value: "next" },
           { title: "Next.js (Monorepo)", value: "next-monorepo" },

@@ -11,10 +11,14 @@ export async function preFlightAdd(options: z.infer<typeof addOptionsSchema>) {
   const errors: Record<string, boolean> = {}
 
   // Ensure target directory exists.
-  // Check for empty project. We assume if no package.json exists, the project is empty.
+  // Check for empty project. We assume if no package.json or deno.json exists, the project is empty.
+  const hasPackageJson = fs.existsSync(path.resolve(options.cwd, "package.json"))
+  const hasDenoJson = fs.existsSync(path.resolve(options.cwd, "deno.json")) || 
+                      fs.existsSync(path.resolve(options.cwd, "deno.jsonc"))
+  
   if (
     !fs.existsSync(options.cwd) ||
-    !fs.existsSync(path.resolve(options.cwd, "package.json"))
+    (!hasPackageJson && !hasDenoJson)
   ) {
     errors[ERRORS.MISSING_DIR_OR_EMPTY_PROJECT] = true
     return {
